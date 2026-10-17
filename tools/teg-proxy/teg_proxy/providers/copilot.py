@@ -12,6 +12,7 @@ import os
 
 from copilot import CopilotClient
 from copilot.session import PermissionHandler
+from copilot.session_events import AssistantUsageData
 
 from .base import AgentSession, Provider, ProviderError, Usage
 
@@ -34,13 +35,26 @@ class CopilotSession(AgentSession):
                     skip_custom_instructions=True,
                     system_message={"mode": "replace", "content": self.system},
                 )
-            event = await self.session.send_and_wait(prompt, timeout=300)
+            # Zużycie przychodzi osobnymi zdarzeniami assistant.usage (jedno na wywołanie modelu).
+            usage = Usage()
+
+            def on_event(event):
+                data = event.data
+                if isinstance(data, AssistantUsageData):
+                    usage.prompt_tokens += data.input_tokens or 0
+                    usage.completion_tokens += data.output_tokens or 0
+
+            unsubscribe = self.session.on(on_event)
+            try:
+                event = await self.session.send_and_wait(prompt, timeout=300)
+            finally:
+                unsubscribe()
         except Exception as e:
             if "token" in str(e).lower() or "auth" in str(e).lower():
                 raise ProviderError(401, AUTH_HINT) from e
             raise
         text = getattr(getattr(event, "data", None), "content", "") or ""
-        return text, Usage()  # Copilot nie raportuje zużycia tokenów
+        return text, usage
 
     async def close(self):
         if self.session is not None:
